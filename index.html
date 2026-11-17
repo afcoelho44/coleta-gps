@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coleta de posição</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --txt:#1d2330; --mut:#667085; --pri:#2563eb; --ok:#16a34a; --bad:#dc2626; --bd:#e4e7ec; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--txt); }
+  main { max-width: 560px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.25rem; margin: 4px 0 12px; }
+  .card { background:var(--card); border:1px solid var(--bd); border-radius:12px; padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:.85rem; color:var(--mut); margin: 8px 0 4px; }
+  input, select { width:100%; font-size:1rem; padding:10px; border:1px solid var(--bd); border-radius:8px; }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  button { font-size:1rem; padding:12px; border:0; border-radius:8px; cursor:pointer; width:100%; }
+  .pri { background:var(--pri); color:#fff; font-weight:600; font-size:1.1rem; padding:16px; margin-top:12px; }
+  .pri.parar { background:var(--bad); }
+  .sec { background:#eef2ff; color:var(--pri); }
+  .del { background:#fef2f2; color:var(--bad); }
+  button:disabled { opacity:.5; }
+  .stats { display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; margin-top:8px; }
+  .stat { background:var(--bg); border-radius:8px; padding:8px; text-align:center; }
+  .stat b { display:block; font-size:1.2rem; }
+  .stat span { font-size:.75rem; color:var(--mut); }
+  .msg { font-size:.9rem; color:var(--mut); margin-top:8px; min-height:1.2em; }
+  .msg.erro { color:var(--bad); }
+  .bar { height:6px; background:var(--bg); border-radius:3px; overflow:hidden; margin-top:10px; }
+  .bar > div { height:100%; width:0; background:var(--pri); transition: width .3s; }
+  table { width:100%; border-collapse:collapse; font-size:.85rem; }
+  th, td { text-align:left; padding:6px 4px; border-bottom:1px solid var(--bd); }
+  th { color:var(--mut); font-weight:500; }
+  .num { text-align:right; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Coleta de posição</h1>
+
+  <div class="card">
+    <label for="local">Nome do lugar / marco</label>
+    <input id="local" placeholder="ex.: ginasio-centro, F-10m" autocomplete="off">
+
+    <div class="row">
+      <div>
+        <label for="ambiente">Ambiente</label>
+        <select id="ambiente">
+          <option value="indoor">indoor</option>
+          <option value="outdoor">outdoor</option>
+        </select>
+      </div>
+      <div>
+        <label for="duracao">Duração</label>
+        <select id="duracao">
+          <option value="30">30 s</option>
+          <option value="60">60 s</option>
+          <option value="120" selected>120 s</option>
+          <option value="0">até parar</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="obs">Observação (opcional)</label>
+    <input id="obs" placeholder="ex.: perto da janela, céu nublado" autocomplete="off">
+
+    <button id="btnCaptura" class="pri">Capturar</button>
+    <div class="bar"><div id="progresso"></div></div>
+
+    <div class="stats">
+      <div class="stat"><b id="sN">0</b><span>leituras</span></div>
+      <div class="stat"><b id="sAcc">–</b><span>accuracy atual (m)</span></div>
+      <div class="stat"><b id="sDisp">–</b><span>dispersão (m)</span></div>
+    </div>
+    <div id="msg" class="msg"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnCsv" class="sec">Baixar CSV</button>
+      <button id="btnLimpar" class="del">Apagar tudo</button>
+    </div>
+    <div id="totais" class="msg"></div>
+    <table>
+      <thead><tr><th>Lugar</th><th class="num">Rep.</th><th class="num">N</th><th class="num">Acc. média</th><th class="num">Disp.</th></tr></thead>
+      <tbody id="lista"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+// ---------- armazenamento (fica no navegador do celular) ----------
+const CHAVE = 'coleta_posicao_v1';
+function carregar() {
+  try { return JSON.parse(localStorage.getItem(CHAVE)) || { capturas: [] }; }
+  catch (e) { return { capturas: [] }; }
+}
+function salvar(dados) {
+  try { localStorage.setItem(CHAVE, JSON.stringify(dados)); }
+  catch (e) { mostrarMsg('Não consegui salvar no navegador: ' + e.message, true); }
+}
+let dados = carregar();
+
+// ---------- utilidades ----------
+const $ = id => document.getElementById(id);
+function mostrarMsg(t, erro) { $('msg').textContent = t; $('msg').className = 'msg' + (erro ? ' erro' : ''); }
+
+// média das posições e desvio-padrão da distância até a média (em metros)
+function resumo(leituras) {
+  const n = leituras.length;
+  if (!n) return { n: 0, accMedia: null, disp: null };
+  const lat0 = leituras.reduce((s, l) => s + l.lat, 0) / n;
+  const lng0 = leituras.reduce((s, l) => s + l.lng, 0) / n;
+  const mLat = 111320, mLng = 111320 * Math.cos(lat0 * Math.PI / 180);
+  const d2 = leituras.map(l => ((l.lat - lat0) * mLat) ** 2 + ((l.lng - lng0) * mLng) ** 2);
+  const disp = Math.sqrt(d2.reduce((s, v) => s + v, 0) / n);
+  const accMedia = leituras.reduce((s, l) => s + l.accuracy, 0) / n;
+  return { n, accMedia, disp, lat0, lng0 };
+}
+const fmt = v => (v == null || isNaN(v)) ? '–' : v.toFixed(1);
+
+// ---------- bússola (opcional, para ver interferência indoor) ----------
+let bussola = null, bussolaAbs = false;
+function onOrientacao(e, absoluto) {
+  if (e.alpha == null) return;
+  bussola = (360 - e.alpha) % 360;
+  bussolaAbs = absoluto || !!e.absolute;
+}
+const handlerAbs = e => onOrientacao(e, true);
+const handlerRel = e => { if (!bussolaAbs) onOrientacao(e, false); };
+async function ligarBussola() {
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      await DeviceOrientationEvent.requestPermission();
+    }
+  } catch (e) { /* sem permissão: segue sem bússola */ }
+  window.addEventListener('deviceorientationabsolute', handlerAbs);
+  window.addEventListener('deviceorientation', handlerRel);
+}
+function desligarBussola() {
+  window.removeEventListener('deviceorientationabsolute', handlerAbs);
+  window.removeEventListener('deviceorientation', handlerRel);
+}
+
+// ---------- captura ----------
+let atual = null, watchId = null, timer = null, wakeLock = null;
+
+async function iniciar() {
+  const local = $('local').value.trim();
+  if (!local) { mostrarMsg('Escreva o nome do lugar antes de capturar.', true); $('local').focus(); return; }
+  if (!('geolocation' in navigator)) { mostrarMsg('Este navegador não tem geolocalização.', true); return; }
+
+  const rep = dados.capturas.filter(c => c.local === local).length + 1;
+  const duracao = Number($('duracao').value);
+  atual = {
+    id: Date.now().toString(36),
+    local, repeticao: rep,
+    ambiente: $('ambiente').value,
+    obs: $('obs').value.trim(),
+    inicio: new Date().toISOString(),
+    inicioMs: performance.now(),
+    duracao,
+    dispositivo: navigator.userAgent,
+    leituras: []
+  };
+
+  $('btnCaptura').textContent = 'Parar';
+  $('btnCaptura').classList.add('parar');
+  ['local', 'ambiente', 'duracao', 'obs'].forEach(id => $(id).disabled = true);
+  $('sN').textContent = '0'; $('sAcc').textContent = '–'; $('sDisp').textContent = '–';
+  mostrarMsg(`Capturando "${local}" (repetição ${rep})… fique parado.`);
+
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  await ligarBussola();
+
+  watchId = navigator.geolocation.watchPosition(onPosicao, onErro, {
+    enableHighAccuracy: true, maximumAge: 0, timeout: 20000
+  });
+
+  timer = setInterval(() => {
+    const seg = (performance.now() - atual.inicioMs) / 1000;
+    if (duracao > 0) {
+      $('progresso').style.width = Math.min(100, seg / duracao * 100) + '%';
+      if (seg >= duracao) parar();
+    } else {
+      $('progresso').style.width = '100%';
+    }
+  }, 250);
+}
+
+function onPosicao(p) {
+  if (!atual) return;
+  const c = p.coords;
+  atual.leituras.push({
+    t_ms: Math.round(performance.now() - atual.inicioMs),
+    gps_timestamp: new Date(p.timestamp).toISOString(),
+    lat: c.latitude, lng: c.longitude, accuracy: c.accuracy,
+    altitude: c.altitude, altitude_accuracy: c.altitudeAccuracy,
+    speed: c.speed, heading: c.heading,
+    bussola: bussola == null ? null : Math.round(bussola * 10) / 10,
+    bussola_absoluta: bussola == null ? null : bussolaAbs
+  });
+  const r = resumo(atual.leituras);
+  $('sN').textContent = r.n;
+  $('sAcc').textContent = fmt(c.accuracy);
+  $('sDisp').textContent = fmt(r.disp);
+}
+
+function onErro(e) {
+  const motivos = { 1: 'permissão de localização negada', 2: 'posição indisponível', 3: 'tempo esgotado esperando o GPS' };
+  mostrarMsg('Erro: ' + (motivos[e.code] || e.message) + '. A captura continua tentando.', true);
+}
+
+function parar() {
+  if (!atual) return;
+  if (watchId != null) navigator.geolocation.clearWatch(watchId);
+  clearInterval(timer);
+  desligarBussola();
+  try { if (wakeLock) wakeLock.release(); } catch (e) {}
+  watchId = null; timer = null; wakeLock = null;
+
+  const r = resumo(atual.leituras);
+  atual.fim = new Date().toISOString();
+  delete atual.inicioMs;
+  if (r.n > 0) {
+    dados.capturas.push(atual);
+    salvar(dados);
+    mostrarMsg(`Salvo: "${atual.local}" rep. ${atual.repeticao} — ${r.n} leituras, accuracy média ${fmt(r.accMedia)} m.`);
+  } else {
+    mostrarMsg('Nenhuma leitura recebida; nada foi salvo.', true);
+  }
+  atual = null;
+
+  $('btnCaptura').textContent = 'Capturar';
+  $('btnCaptura').classList.remove('parar');
+  ['local', 'ambiente', 'duracao', 'obs'].forEach(id => $(id).disabled = false);
+  $('progresso').style.width = '0';
+  desenharLista();
+}
+
+// ---------- lista e exportação ----------
+function desenharLista() {
+  const tb = $('lista');
+  tb.innerHTML = '';
+  dados.capturas.slice().reverse().forEach(c => {
+    const r = resumo(c.leituras);
+    const tr = document.createElement('tr');
+    [c.local, c.repeticao, r.n, fmt(r.accMedia), fmt(r.disp)].forEach((v, i) => {
+      const td = document.createElement('td');
+      td.textContent = v;
+      if (i > 0) td.className = 'num';
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  const total = dados.capturas.reduce((s, c) => s + c.leituras.length, 0);
+  $('totais').textContent = `${dados.capturas.length} capturas, ${total} leituras guardadas neste celular.`;
+}
+
+const COLUNAS = ['captura_id', 'local', 'repeticao', 'ambiente', 'obs', 'inicio', 'fim', 'leitura_idx',
+  't_ms', 'gps_timestamp', 'lat', 'lng', 'accuracy', 'altitude', 'altitude_accuracy', 'speed', 'heading',
+  'bussola', 'bussola_absoluta', 'dispositivo'];
+
+function csvCampo(v) {
+  if (v == null) return '';
+  const s = String(v);
+  return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function baixarCsv() {
+  if (!dados.capturas.length) { mostrarMsg('Ainda não há capturas para exportar.', true); return; }
+  const linhas = [COLUNAS.join(',')];
+  dados.capturas.forEach(c => c.leituras.forEach((l, i) => {
+    const reg = { captura_id: c.id, local: c.local, repeticao: c.repeticao, ambiente: c.ambiente, obs: c.obs,
+      inicio: c.inicio, fim: c.fim, leitura_idx: i, dispositivo: c.dispositivo, ...l };
+    linhas.push(COLUNAS.map(k => csvCampo(reg[k])).join(','));
+  }));
+  const blob = new Blob([linhas.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'coleta_' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function apagarTudo() {
+  if (!dados.capturas.length) return;
+  if (!confirm('Apagar todas as capturas deste celular? Baixe o CSV antes.')) return;
+  dados = { capturas: [] };
+  salvar(dados);
+  desenharLista();
+  mostrarMsg('Capturas apagadas.');
+}
+
+$('btnCaptura').addEventListener('click', () => atual ? parar() : iniciar());
+$('btnCsv').addEventListener('click', baixarCsv);
+$('btnLimpar').addEventListener('click', apagarTudo);
+desenharLista();
+</script>
+</body>
+</html>
