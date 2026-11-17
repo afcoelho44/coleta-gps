@@ -123,12 +123,17 @@ const fmt = v => (v == null || isNaN(v)) ? '–' : v.toFixed(1);
 // ---------- bússola (opcional, para ver interferência indoor) ----------
 let bussola = null, bussolaAbs = false;
 function onOrientacao(e, absoluto) {
+  if (typeof e.webkitCompassHeading === 'number') { // iPhone: já vem em graus a partir do norte
+    bussola = e.webkitCompassHeading; bussolaAbs = true; return;
+  }
   if (e.alpha == null) return;
   bussola = (360 - e.alpha) % 360;
   bussolaAbs = absoluto || !!e.absolute;
 }
 const handlerAbs = e => onOrientacao(e, true);
-const handlerRel = e => { if (!bussolaAbs) onOrientacao(e, false); };
+const handlerRel = e => {
+  if (typeof e.webkitCompassHeading === 'number' || !bussolaAbs) onOrientacao(e, false);
+};
 async function ligarBussola() {
   try {
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -171,8 +176,8 @@ async function iniciar() {
   $('sN').textContent = '0'; $('sAcc').textContent = '–'; $('sDisp').textContent = '–';
   mostrarMsg(`Capturando "${local}" (repetição ${rep})… fique parado.`);
 
+  await ligarBussola(); // primeiro: o iPhone só pede permissão da bússola dentro do toque no botão
   try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
-  await ligarBussola();
 
   watchId = navigator.geolocation.watchPosition(onPosicao, onErro, {
     enableHighAccuracy: true, maximumAge: 0, timeout: 20000
@@ -195,6 +200,7 @@ function onPosicao(p) {
   atual.leituras.push({
     t_ms: Math.round(performance.now() - atual.inicioMs),
     gps_timestamp: new Date(p.timestamp).toISOString(),
+    fix_antigo: p.timestamp < Date.parse(atual.inicio), // posição em cache, de antes de apertar Capturar
     lat: c.latitude, lng: c.longitude, accuracy: c.accuracy,
     altitude: c.altitude, altitude_accuracy: c.altitudeAccuracy,
     speed: c.speed, heading: c.heading,
@@ -259,7 +265,7 @@ function desenharLista() {
 }
 
 const COLUNAS = ['captura_id', 'local', 'repeticao', 'ambiente', 'obs', 'inicio', 'fim', 'leitura_idx',
-  't_ms', 'gps_timestamp', 'lat', 'lng', 'accuracy', 'altitude', 'altitude_accuracy', 'speed', 'heading',
+  't_ms', 'gps_timestamp', 'fix_antigo', 'lat', 'lng', 'accuracy', 'altitude', 'altitude_accuracy', 'speed', 'heading',
   'bussola', 'bussola_absoluta', 'dispositivo'];
 
 function csvCampo(v) {
