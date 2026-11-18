@@ -40,8 +40,25 @@
   <h1>Coleta de posição</h1>
 
   <div class="card">
-    <label for="local">Nome do lugar / marco</label>
-    <input id="local" placeholder="ex.: ginasio-centro, F-10m" autocomplete="off">
+    <label for="participante">Participante</label>
+    <input id="participante" placeholder="ex.: P01" autocomplete="off">
+
+    <div class="row">
+      <div>
+        <label for="local">Ponto de interesse</label>
+        <input id="local" list="pontos" placeholder="ex.: Ginásio" autocomplete="off">
+        <datalist id="pontos"></datalist>
+      </div>
+      <div>
+        <label for="distancia">Distância (fita)</label>
+        <select id="distancia">
+          <option value="0">0 m (no objeto)</option>
+          <option value="5">5 m</option>
+          <option value="10">10 m</option>
+          <option value="20">20 m</option>
+        </select>
+      </div>
+    </div>
 
     <div class="row">
       <div>
@@ -83,7 +100,7 @@
     </div>
     <div id="totais" class="msg"></div>
     <table>
-      <thead><tr><th>Lugar</th><th class="num">Rep.</th><th class="num">N</th><th class="num">Acc. média</th><th class="num">Disp.</th></tr></thead>
+      <thead><tr><th>Ponto</th><th class="num">Dist.</th><th class="num">Rep.</th><th class="num">N</th><th class="num">Acc. média</th><th class="num">Disp.</th></tr></thead>
       <tbody id="lista"></tbody>
     </table>
   </div>
@@ -152,15 +169,20 @@ function desligarBussola() {
 let atual = null, watchId = null, timer = null, wakeLock = null;
 
 async function iniciar() {
-  const local = $('local').value.trim();
+  const local = $('local').value.trim().replace(/\s+/g, ' ');
+  const participante = $('participante').value.trim();
+  const distancia = Number($('distancia').value);
+  if (!participante) { mostrarMsg('Preencha o participante antes de capturar.', true); $('participante').focus(); return; }
+  try { localStorage.setItem('coleta_participante', participante); } catch (e) {}
   if (!local) { mostrarMsg('Escreva o nome do lugar antes de capturar.', true); $('local').focus(); return; }
   if (!('geolocation' in navigator)) { mostrarMsg('Este navegador não tem geolocalização.', true); return; }
 
-  const rep = dados.capturas.filter(c => c.local === local).length + 1;
+  const rep = dados.capturas.filter(c => c.local.toLowerCase() === local.toLowerCase() && c.distancia_m === distancia
+    && c.participante === participante && c.ambiente === $('ambiente').value).length + 1;
   const duracao = Number($('duracao').value);
   atual = {
     id: Date.now().toString(36),
-    local, repeticao: rep,
+    local, distancia_m: distancia, participante, repeticao: rep,
     ambiente: $('ambiente').value,
     obs: $('obs').value.trim(),
     inicio: new Date().toISOString(),
@@ -172,9 +194,9 @@ async function iniciar() {
 
   $('btnCaptura').textContent = 'Parar';
   $('btnCaptura').classList.add('parar');
-  ['local', 'ambiente', 'duracao', 'obs'].forEach(id => $(id).disabled = true);
+  ['participante', 'local', 'distancia', 'ambiente', 'duracao', 'obs'].forEach(id => $(id).disabled = true);
   $('sN').textContent = '0'; $('sAcc').textContent = '–'; $('sDisp').textContent = '–';
-  mostrarMsg(`Capturando "${local}" (repetição ${rep})… fique parado.`);
+  mostrarMsg(`Capturando "${local}" a ${distancia} m (repetição ${rep})… fique parado no marco.`);
 
   await ligarBussola(); // primeiro: o iPhone só pede permissão da bússola dentro do toque no botão
   try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
@@ -240,7 +262,7 @@ function parar() {
 
   $('btnCaptura').textContent = 'Capturar';
   $('btnCaptura').classList.remove('parar');
-  ['local', 'ambiente', 'duracao', 'obs'].forEach(id => $(id).disabled = false);
+  ['participante', 'local', 'distancia', 'ambiente', 'duracao', 'obs'].forEach(id => $(id).disabled = false);
   $('progresso').style.width = '0';
   desenharLista();
 }
@@ -252,7 +274,7 @@ function desenharLista() {
   dados.capturas.slice().reverse().forEach(c => {
     const r = resumo(c.leituras);
     const tr = document.createElement('tr');
-    [c.local, c.repeticao, r.n, fmt(r.accMedia), fmt(r.disp)].forEach((v, i) => {
+    [c.local, c.distancia_m ?? '–', c.repeticao, r.n, fmt(r.accMedia), fmt(r.disp)].forEach((v, i) => {
       const td = document.createElement('td');
       td.textContent = v;
       if (i > 0) td.className = 'num';
@@ -260,11 +282,13 @@ function desenharLista() {
     });
     tb.appendChild(tr);
   });
+  const dl = $('pontos'); dl.innerHTML = '';
+  [...new Set(dados.capturas.map(c => c.local))].forEach(p => { const o = document.createElement('option'); o.value = p; dl.appendChild(o); });
   const total = dados.capturas.reduce((s, c) => s + c.leituras.length, 0);
   $('totais').textContent = `${dados.capturas.length} capturas, ${total} leituras guardadas neste celular.`;
 }
 
-const COLUNAS = ['captura_id', 'local', 'repeticao', 'ambiente', 'obs', 'inicio', 'fim', 'leitura_idx',
+const COLUNAS = ['captura_id', 'participante', 'local', 'distancia_m', 'repeticao', 'ambiente', 'obs', 'inicio', 'fim', 'leitura_idx',
   't_ms', 'gps_timestamp', 'fix_antigo', 'lat', 'lng', 'accuracy', 'altitude', 'altitude_accuracy', 'speed', 'heading',
   'bussola', 'bussola_absoluta', 'dispositivo'];
 
@@ -278,7 +302,7 @@ function baixarCsv() {
   if (!dados.capturas.length) { mostrarMsg('Ainda não há capturas para exportar.', true); return; }
   const linhas = [COLUNAS.join(',')];
   dados.capturas.forEach(c => c.leituras.forEach((l, i) => {
-    const reg = { captura_id: c.id, local: c.local, repeticao: c.repeticao, ambiente: c.ambiente, obs: c.obs,
+    const reg = { captura_id: c.id, participante: c.participante, local: c.local, distancia_m: c.distancia_m, repeticao: c.repeticao, ambiente: c.ambiente, obs: c.obs,
       inicio: c.inicio, fim: c.fim, leitura_idx: i, dispositivo: c.dispositivo, ...l };
     linhas.push(COLUNAS.map(k => csvCampo(reg[k])).join(','));
   }));
@@ -304,6 +328,7 @@ function apagarTudo() {
 $('btnCaptura').addEventListener('click', () => atual ? parar() : iniciar());
 $('btnCsv').addEventListener('click', baixarCsv);
 $('btnLimpar').addEventListener('click', apagarTudo);
+try { $('participante').value = localStorage.getItem('coleta_participante') || ''; } catch (e) {}
 desenharLista();
 </script>
 </body>
